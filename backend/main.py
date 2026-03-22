@@ -1,18 +1,22 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 from openai import OpenAI
-import json, os
+import json, os, traceback, logging
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Import database and routers
 import database
 import auth
 import models
 import dependencies
-from routers.auth_router import router as auth_router
 from routers.auth_router import router as auth_router
 from routers.users_router import router as users_router
 from routers.tracks_router import router as tracks_router
@@ -36,10 +40,27 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global exception handler to ensure CORS headers are always present
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.method} {request.url}: {exc}")
+    logger.error(traceback.format_exc())
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 
 # Include routers
 app.include_router(auth_router)
@@ -123,11 +144,15 @@ You MUST include a requirement in this new task that specifically forces the use
         role = preferences.get("role", "student")
         
         preference_instruction = f"""
-PERSONALIZATION:
-- User Role: {role}
-- User Goal: {goal}
+PERSONALIZATION (CRITICAL):
+- The User's Role is: {role}
+- The User's Goal is: {goal}
 - Skill Level: {level}
-(Adjust the difficulty and context of the task to match this profile. e.g. if 'Developer', use code examples. If 'Beginner', keep it simple.)
+
+You MUST tailor everything about this task specifically to resonate with someone who is a "{role}".
+The scenario you create, the examples you use, and the terminology MUST be uniquely relevant to a {role} trying to achieve their goal of {goal}.
+If they are a Marketer, the scenario is a marketing campaign. If a Developer, it's code generation. 
+If a Founder, it's a pitch deck. Speak to them and craft tasks purely in the context of their daily responsibilities!
 """
 
     return f"""
@@ -143,13 +168,20 @@ User State:
 {preference_instruction}
 {feedback_instruction}
 
-Rules:
-- Practical real-world task
-- ONE TASK ONLY
-- Increasing difficulty
-- No theory
-- Focus only on current lesson topics
-- Clear instructions
+Teaching Flow & Activity Rules based on Lesson (Choose appropriately based on the 'Lesson'):
+- If Lesson 1 (Understanding LLM Behavior): Briefly explain how LLMs predict the next word. Then, give the user a task to write ONE prompt exploring a complex topic using a specific constraint (e.g., "Explain Quantum mechanics like I'm 10"). The user must submit perfectly ONE prompt and ONE output for evaluation.
+- If Lesson 2 (Core Prompting Techniques): Briefly explain one specific technique (Role, Few-Shot, or Zero-Shot). Then, ask them to write ONE prompt applying that exact technique.
+- If Lesson 3 (Prompt Structure Framework): Briefly introduce the structure "[ROLE] + [CONTEXT] + [TASK] + [CONSTRAINTS] + [OUTPUT FORMAT]". Give them a vague scenario and ask them to write ONE complete prompt following this framework.
+- If Lesson 4 (Iteration & Refinement): Provide a badly formulated prompt. Ask them to write ONE improved prompt that fixes it, and submit the new output. 
+- If Lesson 5 (Real-World Applications): Ask the user to pick a real-world task relevant to their role and write ONE highly structured prompt to accomplish it.
+- If Lesson 6 (Advanced Prompting): Ask the user to write ONE advanced prompt that forces the AI to outline steps logically before giving an answer.
+
+General Rules (CRITICAL FOR UI COMPATIBILITY):
+- The testing platform ONLY supports submitting ONE singular User Prompt and ONE AI Output at a time for evaluation. 
+- NEVER ask the user to compare multiple prompts in the same task. 
+- NEVER ask the user to just answer a question; the task MUST ALWAYS be to create a specific prompt to feed to ChatGPT.
+- ALWAYS end your response by explicitly instructing the user to craft ONE prompt and paste the resulting AI output into the platform for evaluation.
+- Maintain a highly focused, encouraging mentor tone.
 """
 
 
@@ -206,8 +238,18 @@ async def generate_task(
     }
 
 def get_evaluation_criteria(lesson_title):
-    if lesson_title == "Core Basics" or "Introduction" in lesson_title:
-        return "Clarity, Specificity, Role Assignment, Output Format, Conciseness"
+    if "Understanding LLM Behavior" in lesson_title:
+        return "Identify differences in tone, detail, and structure. Explain why prompt wording changes output."
+    elif "Core Prompting Techniques" in lesson_title:
+        return "Effectively use Role Prompting, Zero-shot, or Few-shot techniques. Output quality improves vs basic prompt."
+    elif "Prompt Structure Framework" in lesson_title:
+        return "Includes Role, clear Task, Constraints, and Output Format."
+    elif "Iteration & Refinement" in lesson_title:
+        return "Uses follow-up prompts. Output improves progressively."
+    elif "Real-World Applications" in lesson_title:
+        return "Prompt is well-structured and output is usable in real life."
+    elif "Advanced Prompting" in lesson_title:
+        return "Leverages AI as collaborator. Uses multi-step prompting. Breaks problems into steps."
     return "Persona, Context, Clear Task, Examples, Iteration"
 
 
